@@ -15,7 +15,7 @@ CHROMA_DB_DIR = "./chroma_db"
 UPLOAD_DIR = "./uploaded_pdfs"
 
 MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
-OLLAMA_MODEL_NAME = "phi"
+OLLAMA_MODEL_NAME = "mistral"
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
