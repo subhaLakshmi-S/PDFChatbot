@@ -1,4 +1,5 @@
 from sentence_transformers import SentenceTransformer
+import os
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
