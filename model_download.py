@@ -8,7 +8,7 @@ MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
 # ==============================
 if not os.path.exists(MODEL_PATH):
     print("🔽 Downloading model...")
-    model = SentenceTransformer(MODEL_NAME, device="cpu",backend="torch")
+    model = SentenceTransformer(MODEL_NAME, device="cpu")
     model.save(MODEL_PATH)
     print("✅ Model downloaded & saved")
 else:
