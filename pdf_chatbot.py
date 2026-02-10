@@ -48,9 +48,9 @@ def load_embeddings():
 embedding_model = load_embeddings()
 class CustomEmbedding:
     def embed_documents(self,texts):
-        return embedding_model.encode(texts,normalize_embeddings= True).toList()
+        return embedding_model.encode(texts,normalize_embeddings= True).tolist()
     def embed_query(self,text):
-        return embedding_model.encode(text,normalize_embeddings=True).toList()
+        return embedding_model.encode(text,normalize_embeddings=True).tolist()
 
 import hashlib
 
