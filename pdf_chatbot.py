@@ -43,13 +43,17 @@ if "current_pdf_hash" not in st.session_state:
 # ================= EMBEDDINGS =================
 @st.cache_resource
 def load_embeddings():
-    return HuggingFaceEmbeddings(
+    return SentenceTransformer(
         model_name=MODEL_PATH,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True}
+        model_kwargs={"device": "cpu"}
     )
 
 embedding_model = load_embeddings()
+class CustomEmbedding:
+    def embed_documents(self,texts):
+        return embedding_model.encode(texts,normalize_embeddings= True).toList()
+    def embed_query(self,text):
+        return embedding_model.encode(text,normalize_embeddings=True).toList()
 
 import hashlib
 
@@ -78,12 +82,12 @@ def build_vectorstore(file_bytes, pdf_hash):
     if os.path.exists(db_path):
         return Chroma(
             persist_directory=db_path,
-            embedding_function=embedding_model
+            embedding_function=CustomEmbedding()
         )
 
     vs = Chroma.from_documents(
         chunks,
-        embedding_model,
+        embedding = CustomEmbedding(),
         persist_directory=db_path
     )
     vs.persist()
