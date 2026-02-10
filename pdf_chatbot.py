@@ -43,10 +43,7 @@ if "current_pdf_hash" not in st.session_state:
 # ================= EMBEDDINGS =================
 @st.cache_resource
 def load_embeddings():
-    return SentenceTransformer(
-        model_name=MODEL_PATH,
-        model_kwargs={"device": "cpu"}
-    )
+    return SentenceTransformer(MODEL_PATH, device='cpu')
 
 embedding_model = load_embeddings()
 class CustomEmbedding:
