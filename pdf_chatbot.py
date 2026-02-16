@@ -22,7 +22,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ================= STREAMLIT UI =================
 st.set_page_config(page_title="PDF Chatbot", layout="wide")
-st.title("📚 Chat with Your PDF (Offline)")
+st.title("📚 Chat with Your PDF")
 
 # ================= SESSION STATE =================
 if "llm" not in st.session_state:
@@ -61,26 +61,32 @@ def get_pdf_hash(file_bytes: bytes) -> str:
 PDF_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""
-You are a helpful assistant.
-Answer the question using ONLY the information from the pdf.
-If the answer is not present, say:
-"I could not find this information in the uploaded PDF."
+You are an AI assistant that MUST answer ONLY using the information strictly found in the provided PDF context.
 
-Context:
+⚠️ RULES (Follow them exactly):
+- Use ONLY the text inside the "Context" section.
+- Do NOT use general knowledge.
+- Do NOT guess or infer beyond the PDF.
+- Do NOT mix information from other PDFs or previous chats.
+- If the answer is not explicitly present in the context, reply exactly:
+  "I could not find this information in the uploaded PDF."
+
+Context (strict source of truth):
 {context}
 
-Question:
+User Question:
 {question}
 
-Answer:
+Your Answer (ONLY from the context):
 """
 )
+
 
 SUMMARY_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""
 You are a helpful assistant.
-Summarize the document based on the uploaded pdf.
+Summarize the document based on the uploaded pdf only.
 You MAY combine and infer information across sections.
 Answer in bullet points.
 
