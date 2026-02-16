@@ -9,8 +9,10 @@ from langchain_community.llms import Ollama
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 import uuid
+import hashlib
+
 # ================= CONFIG =================
-CHROMA_DB_DIR = "./chroma_db"
+CHROMA_DB_DIR = "./chroma_db"   # (kept for reference; we’ll suffix with hash per-PDF)
 UPLOAD_DIR = "./uploaded_pdfs"
 
 MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
@@ -38,34 +40,88 @@ if "qa_chain" not in st.session_state:
 if "current_pdf_hash" not in st.session_state:
     st.session_state.current_pdf_hash = None
 
-
 # ================= EMBEDDINGS =================
 @st.cache_resource
 def load_embeddings():
+    # CPU inference; set device='cpu' (you already did)
     return SentenceTransformer(MODEL_PATH, device='cpu')
 
-embedding_model = load_embeddings()
+_embedding_model = load_embeddings()
+
 class CustomEmbedding:
-    def embed_documents(self,texts):
-        return embedding_model.encode(texts,normalize_embeddings= True).tolist()
-    def embed_query(self,text):
-        return embedding_model.encode(text,normalize_embeddings=True).tolist()
+    def embed_documents(self, texts):
+        return _embedding_model.encode(texts, normalize_embeddings=True).tolist()
+    def embed_query(self, text):
+        return _embedding_model.encode(text, normalize_embeddings=True).tolist()
 
-import hashlib
-
-def get_pdf_hash(file_bytes):
+def get_pdf_hash(file_bytes: bytes) -> str:
     return hashlib.md5(file_bytes).hexdigest()
 
-# ================= PDF PROCESSING =================
+# ================= PROMPTS =================
+PDF_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template="""
+You are a helpful assistant.
+Answer the question using ONLY the information from the pdf.
+If the answer is not present, say:
+"I could not find this information in the uploaded PDF."
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+)
+
+SUMMARY_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template="""
+You are a helpful assistant.
+Summarize the document based on the uploaded pdf.
+You MAY combine and infer information across sections.
+Answer in bullet points.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+)
+
+def is_summary_question(q: str) -> bool:
+    if not q:
+        return False
+    keywords = ["summary", "summarize", "points", "overview", "about the pdf"]
+    ql = q.lower()
+    return any(k in ql for k in keywords)
+
+# ================= VECTOR STORE (cached by hash) =================
 @st.cache_resource
-def build_vectorstore(file_bytes, pdf_hash):
+def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
+    """
+    Build (or load) a Chroma vector store for a given PDF hash.
+    This function is intentionally cached by the hash + bytes (for correctness),
+    but the heavy part (Chroma persist) is keyed by db_path existence.
+    """
     temp_path = f"temp_{pdf_hash}.pdf"
     with open(temp_path, "wb") as f:
-        f.write(file_bytes)
+        f.write(pdf_bytes)
 
-    loader = PyPDFLoader(temp_path)
-
-    docs = loader.load()
+    try:
+        loader = PyPDFLoader(temp_path)
+        docs = loader.load()
+    finally:
+        # ensure we clean the temp file
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
@@ -83,70 +139,28 @@ def build_vectorstore(file_bytes, pdf_hash):
 
     vs = Chroma.from_documents(
         chunks,
-        embedding = CustomEmbedding(),
+        embedding_function=CustomEmbedding(),
         persist_directory=db_path
     )
     vs.persist()
     return vs
 
-PDF_PROMPT = PromptTemplate(
-    input_variables=["context", "question"],
-    template="""
-You are a helpful assistant.
-Answer the question using ONLY the information from the context.
-If the answer is not present, say:
-"I could not find this information in the uploaded PDF."
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:
-"""
-)
-SUMMARY_PROMPT = PromptTemplate(
-    input_variables=["context", "question"],
-    template="""
-You are a helpful assistant.
-Summarize the document based on the context below.
-You MAY combine and infer information across sections.
-Answer in bullet points.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:
-"""
-)
-def is_summary_question(q):
-    if not q:   # handles None and empty string
-        return False
-
-    keywords = ["summary", "summarize", "points", "overview", "about the pdf"]
-    return any(k in q.lower() for k in keywords)
-
 # ================= PDF UPLOADER =================
 uploaded_pdf = st.file_uploader("📄 Upload a PDF", type=["pdf"])
-
 
 if uploaded_pdf:
     pdf_bytes = uploaded_pdf.read()
     pdf_hash = get_pdf_hash(pdf_bytes)
 
     if st.session_state.current_pdf_hash != pdf_hash:
-        vectorstore = build_vectorstore(pdf_bytes, pdf_hash)
+        vectorstore = build_vectorstore_from_hash(pdf_hash, pdf_bytes)
 
-        # 👇 create retriever ONCE per PDF
+        # retriever ONCE per PDF
         st.session_state.retriever = vectorstore.as_retriever(
             search_kwargs={"k": 8}
         )
 
-        # 👇 create QA chain ONCE per PDF
+        # QA chain ONCE per PDF
         st.session_state.qa_chain = RetrievalQA.from_chain_type(
             llm=st.session_state.llm,
             retriever=st.session_state.retriever,
@@ -158,7 +172,6 @@ if uploaded_pdf:
         st.session_state.chat_history = []
         st.session_state.current_pdf_hash = pdf_hash
 
-
 # ================= CHAT UI =================
 query = st.chat_input("Ask a question from the PDF")
 
@@ -169,7 +182,7 @@ if st.session_state.qa_chain is None:
     st.warning("⚠️ Please upload a PDF first.")
     st.stop()
 
-# Decide which chain to use
+# Decide which chain to use (regular vs summary)
 if is_summary_question(query):
     qa_chain = RetrievalQA.from_chain_type(
         llm=st.session_state.llm,
@@ -182,20 +195,19 @@ else:
     qa_chain = st.session_state.qa_chain
 
 # Run the chosen chain
-st.session_state.chat_history.append(
-    {"role": "user", "content": query}
-)
+st.session_state.chat_history.append({"role": "user", "content": query})
 
 response = qa_chain.invoke({"query": query})
+result_text = response.get("result") or response.get("output_text") or str(response)
 
-st.session_state.chat_history.append(
-    {"role": "assistant", "content": response["result"]}
-)
+st.session_state.chat_history.append({"role": "assistant", "content": result_text})
 
-
-
+# Reset PDF
 if st.button("🔄 Reset PDF"):
-    st.session_state.clear()
+    # Clear only app-related keys to be safe
+    for k in ["llm", "chat_history", "qa_chain", "current_pdf_hash", "retriever"]:
+        if k in st.session_state:
+            del st.session_state[k]
     st.rerun()
 
 # ================= DISPLAY CHAT =================
