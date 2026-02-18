@@ -144,8 +144,8 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
         )
 
     vs = Chroma.from_documents(
-        chunks,
-        embedding_function=CustomEmbedding(),
+        documents=chunks,
+        embedding=CustomEmbedding(),
         persist_directory=db_path
     )
     vs.persist()
