@@ -63,36 +63,32 @@ def get_pdf_hash(file_bytes: bytes) -> str:
 PDF_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""
-You are an AI assistant that MUST answer ONLY using the information strictly found in the provided PDF context.
-
-⚠️ RULES (Follow exactly):
-- Use ONLY the text inside the "Context" section.
-- Do NOT use general knowledge.
-- Do NOT guess or infer beyond the PDF.
-- Do NOT mix information from other PDFs or previous chats.
-- If the answer is not explicitly present in the context, reply exactly:
-  "I could not find this information in the uploaded PDF."
-
-When you give an answer:
-- Prefer quoting short phrases from the context verbatim when possible.
-- Keep the answer concise and factual.
-
-Context (strict source of truth):
-{context}
-
-User Question:
-{question}
-
-Your Answer (ONLY from the context):
-"""
-)
+    You are an AI assistant that MUST answer ONLY using the information strictly found in the provided PDF context.
+    
+    ⚠️ RULES (Follow them exactly):
+    - Use ONLY the text inside the "Context" section.
+    - Do NOT use general knowledge.
+    - Do NOT guess or infer beyond the PDF.
+    - Do NOT mix information from other PDFs or previous chats.
+    - If the answer is not explicitly present in the context, reply exactly:
+      "I could not find this information in the uploaded PDF."
+    
+    Context (strict source of truth):
+    {context}
+    
+    User Question:
+    {question}
+    
+    Your Answer (ONLY from the context):
+    """
+    )
 
 SUMMARY_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""
 You are a helpful assistant.
-Summarize the document based ONLY on the uploaded PDF context.
-You MAY combine details across sections, but do not introduce any external knowledge.
+Summarize the document based on the uploaded pdf only.
+You MAY combine and infer information across sections.
 Answer in bullet points.
 
 Context:
@@ -271,13 +267,6 @@ else:
     st.caption("📤 Upload a PDF to begin.")
 
 query = st.chat_input("Ask a question from the PDF")
-
-# Quick controls row
-col1, col2 = st.columns([1, 1])
-with col1:
-    show_sources = st.toggle("Show sources (debug)", value=False, help="View the chunks retrieved and their scores.")
-with col2:
-    st.caption(f"Threshold: {SCORE_THRESHOLD} | Top-K: {K} | Model: {OLLAMA_MODEL_NAME}")
 
 if query:
     st.session_state.chat_history.append({"role": "user", "content": query})
