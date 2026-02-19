@@ -1,5 +1,4 @@
 import os
-import shutil
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 from langchain_community.document_loaders import PyPDFLoader
@@ -7,17 +6,16 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.llms import Ollama
 from langchain.prompts import PromptTemplate
-import uuid
 import hashlib
 
 # ================= CONFIG =================
 UPLOAD_DIR = "./uploaded_pdfs"
-MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
-OLLAMA_MODEL_NAME = "mistral"
+MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"  # local ST model dir or name
+OLLAMA_MODEL_NAME = "mistral"  # ensure 'ollama run mistral' works on your machine
 
 # Retrieval strictness (tune as needed)
 K = 8
-SCORE_THRESHOLD = 0.35  # higher => stricter; 0.3–0.45 is typical
+SCORE_THRESHOLD = 0.35  # higher => stricter; try 0.30–0.45
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -119,8 +117,8 @@ def is_summary_question(q: str) -> bool:
 def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
     """
     Build (or load) a Chroma vector store for a given PDF hash.
-    This is version-robust across LangChain/Chroma changes:
-    it tries embedding_function first, falls back to embedding.
+    Version-robust across LangChain/Chroma changes:
+    tries embedding_function first, falls back to embedding.
     """
     temp_path = f"temp_{pdf_hash}.pdf"
     with open(temp_path, "wb") as f:
@@ -140,6 +138,9 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
         chunk_overlap=50
     )
     chunks = splitter.split_documents(docs)
+
+    if not chunks:
+        raise ValueError("No extractable text found in the PDF (it might be a scanned image). Try an OCR version.")
 
     db_path = f"./chroma_db_{pdf_hash}"
     collection_name = f"pdf_{pdf_hash}"
@@ -188,20 +189,39 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
 uploaded_pdf = st.file_uploader("📄 Upload a PDF", type=["pdf"])
 
 if uploaded_pdf:
-    pdf_bytes = uploaded_pdf.read()
-    pdf_hash = get_pdf_hash(pdf_bytes)
+    with st.spinner("⏳ Processing PDF…"):
+        try:
+            # Read ONCE; getvalue() avoids pointer issues after multiple reruns
+            pdf_bytes = uploaded_pdf.getvalue()
+            if not pdf_bytes:
+                st.error("❌ Could not read the uploaded file. Please re-upload the PDF.")
+                st.stop()
 
-    if st.session_state.current_pdf_hash != pdf_hash:
-        vectorstore = build_vectorstore_from_hash(pdf_hash, pdf_bytes)
-        st.session_state.vectorstore = vectorstore
+            pdf_hash = get_pdf_hash(pdf_bytes)
 
-        st.session_state.retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"k": K, "score_threshold": SCORE_THRESHOLD},
-        )
+            # Only rebuild if a new/different PDF is uploaded
+            if st.session_state.current_pdf_hash != pdf_hash:
+                vectorstore = build_vectorstore_from_hash(pdf_hash, pdf_bytes)
+                st.session_state.vectorstore = vectorstore
 
-        st.session_state.chat_history = []
-        st.session_state.current_pdf_hash = pdf_hash
+                # Try strict retriever; fallback to basic similarity if unsupported
+                try:
+                    st.session_state.retriever = vectorstore.as_retriever(
+                        search_type="similarity_score_threshold",
+                        search_kwargs={"k": K, "score_threshold": SCORE_THRESHOLD},
+                    )
+                except Exception:
+                    st.session_state.retriever = vectorstore.as_retriever(
+                        search_kwargs={"k": K}
+                    )
+
+                st.session_state.chat_history = []
+                st.session_state.current_pdf_hash = pdf_hash
+
+            st.success("✅ PDF processed. You can ask questions now!")
+        except Exception as e:
+            st.error(f"❌ Error while processing the PDF: {e}")
+            st.stop()
 
 # ================= STRICT ASK FUNCTION =================
 def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
@@ -214,7 +234,7 @@ def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
     if st.session_state.retriever is None:
         return "⚠️ Please upload a PDF first.", None
 
-    # Get relevant documents (the retriever will filter by threshold)
+    # Get relevant documents (the retriever will filter by threshold if configured)
     docs = st.session_state.retriever.get_relevant_documents(query)
 
     if not docs:
@@ -230,10 +250,11 @@ def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
     if isinstance(llm_out, str):
         answer = llm_out.strip()
     else:
+        # Some wrappers return objects; ensure string
         answer = str(llm_out)
 
     if show_sources:
-        # Try to also show scores (fallback to 2nd call through vectorstore API)
+        # Try to also show scores (fallback to list without scores)
         try:
             scored = st.session_state.vectorstore.similarity_search_with_score(query, k=K)
             sources = [(d.metadata, s) for d, s in scored]
@@ -244,6 +265,11 @@ def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
     return answer, None
 
 # ================= CHAT UI =================
+if st.session_state.get("current_pdf_hash"):
+    st.caption("📘 PDF loaded. Type your question below.")
+else:
+    st.caption("📤 Upload a PDF to begin.")
+
 query = st.chat_input("Ask a question from the PDF")
 
 # Quick controls row
@@ -255,7 +281,7 @@ with col2:
 
 if query:
     st.session_state.chat_history.append({"role": "user", "content": query})
-    
+
     if st.session_state.retriever is None:
         result_text = "⚠️ Please upload a PDF first."
         sources = None
