@@ -130,8 +130,8 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
             pass
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50
+        chunk_size=300,
+        chunk_overlap=30
     )
     chunks = splitter.split_documents(docs)
 
@@ -163,7 +163,7 @@ if uploaded_pdf:
 
         # retriever ONCE per PDF
         st.session_state.retriever = vectorstore.as_retriever(
-            search_kwargs={"k": 8}
+            search_kwargs={"k": 2}
         )
 
         # QA chain ONCE per PDF
