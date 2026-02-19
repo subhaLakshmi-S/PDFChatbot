@@ -277,7 +277,7 @@ if query:
     else:
         # Decide which mode to use
         summary_mode = is_summary_question(query)
-        result_text, sources = strict_ask(query, summary=summary_mode, show_sources=show_sources)
+        result_text, sources = strict_ask(query, summary=summary_mode)
 
     st.session_state.chat_history.append({"role": "assistant", "content": result_text})
 
