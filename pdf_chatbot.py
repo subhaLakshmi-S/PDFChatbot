@@ -220,7 +220,7 @@ if uploaded_pdf:
             st.stop()
 
 # ================= STRICT ASK FUNCTION =================
-def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
+def strict_ask(query: str, summary: bool = False):
     """
     Enforces PDF-only answers:
     1) Retrieve with score thresholding.
@@ -249,15 +249,6 @@ def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
         # Some wrappers return objects; ensure string
         answer = str(llm_out)
 
-    if show_sources:
-        # Try to also show scores (fallback to list without scores)
-        try:
-            scored = st.session_state.vectorstore.similarity_search_with_score(query, k=K)
-            sources = [(d.metadata, s) for d, s in scored]
-        except Exception:
-            sources = [(getattr(d, "metadata", {}), None) for d in docs]
-        return answer, sources
-
     return answer, None
 
 # ================= CHAT UI =================
@@ -284,11 +275,6 @@ if query:
     # Show last turn immediately
     with st.chat_message("assistant"):
         st.write(result_text)
-        if show_sources and sources is not None:
-            st.markdown("**Retrieved Chunks (metadata, score):**")
-            for i, (meta, score) in enumerate(sources, start=1):
-                st.write(f"[{i}] score={score}")
-                st.json(meta)
 
 # Reset PDF / Session
 if st.button("🔄 Reset PDF"):
