@@ -119,7 +119,8 @@ def is_summary_question(q: str) -> bool:
 def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
     """
     Build (or load) a Chroma vector store for a given PDF hash.
-    Persists to a per-PDF directory to prevent cross-PDF contamination.
+    This is version-robust across LangChain/Chroma changes:
+    it tries embedding_function first, falls back to embedding.
     """
     temp_path = f"temp_{pdf_hash}.pdf"
     with open(temp_path, "wb") as f:
@@ -141,20 +142,47 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
     chunks = splitter.split_documents(docs)
 
     db_path = f"./chroma_db_{pdf_hash}"
+    collection_name = f"pdf_{pdf_hash}"
+
+    def _load_chroma(path: str):
+        # Try embedding_function first; if TypeError, retry with embedding
+        try:
+            return Chroma(
+                persist_directory=path,
+                collection_name=collection_name,
+                embedding_function=CustomEmbedding()
+            )
+        except TypeError:
+            # Older API fallback
+            return Chroma(
+                persist_directory=path,
+                collection_name=collection_name,
+                embedding=CustomEmbedding()
+            )
+
+    def _create_chroma_from_docs(_docs, path: str):
+        # Try embedding_function first; if TypeError, retry with embedding
+        try:
+            vs = Chroma.from_documents(
+                documents=_docs,
+                embedding_function=CustomEmbedding(),
+                persist_directory=path,
+                collection_name=collection_name,
+            )
+        except TypeError:
+            vs = Chroma.from_documents(
+                documents=_docs,
+                embedding=CustomEmbedding(),
+                persist_directory=path,
+                collection_name=collection_name,
+            )
+        vs.persist()
+        return vs
 
     if os.path.exists(db_path):
-        return Chroma(
-            persist_directory=db_path,
-            embedding_function=CustomEmbedding()
-        )
+        return _load_chroma(db_path)
 
-    vs = Chroma.from_documents(
-        documents=chunks,
-        embedding_function=CustomEmbedding(),  # FIXED: use embedding_function
-        persist_directory=db_path
-    )
-    vs.persist()
-    return vs
+    return _create_chroma_from_docs(chunks, db_path)
 
 # ================= PDF UPLOADER =================
 uploaded_pdf = st.file_uploader("📄 Upload a PDF", type=["pdf"])
@@ -167,13 +195,9 @@ if uploaded_pdf:
         vectorstore = build_vectorstore_from_hash(pdf_hash, pdf_bytes)
         st.session_state.vectorstore = vectorstore
 
-        # STRICT retriever: thresholded similarity
         st.session_state.retriever = vectorstore.as_retriever(
-            search_type="similarity_score_threshold",
-            search_kwargs={
-                "k": K,
-                "score_threshold": SCORE_THRESHOLD
-            },
+        search_type="similarity_score_threshold",
+        search_kwargs={"k": K, "score_threshold": SCORE_THRESHOLD},
         )
 
         st.session_state.chat_history = []
@@ -231,7 +255,7 @@ with col2:
 
 if query:
     st.session_state.chat_history.append({"role": "user", "content": query})
-
+    
     if st.session_state.retriever is None:
         result_text = "⚠️ Please upload a PDF first."
         sources = None
