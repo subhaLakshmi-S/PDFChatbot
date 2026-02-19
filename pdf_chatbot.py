@@ -16,7 +16,7 @@ CHROMA_DB_DIR = "./chroma_db"   # (kept for reference; we’ll suffix with hash 
 UPLOAD_DIR = "./uploaded_pdfs"
 
 MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
-OLLAMA_MODEL_NAME = "mistral"
+OLLAMA_MODEL_NAME = "phi"
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -61,25 +61,29 @@ def get_pdf_hash(file_bytes: bytes) -> str:
 PDF_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""
-You are an AI assistant that MUST answer ONLY using the information strictly found in the provided PDF context.
-
-⚠️ RULES (Follow them exactly):
-- Use ONLY the text inside the "Context" section.
-- Do NOT use general knowledge.
-- Do NOT guess or infer beyond the PDF.
-- Do NOT mix information from other PDFs or previous chats.
-- If the answer is not explicitly present in the context, reply exactly:
-  "I could not find this information in the uploaded PDF."
-
-Context (strict source of truth):
-{context}
-
-User Question:
-{question}
-
-Your Answer (ONLY from the context):
-"""
-)
+    You are an AI assistant that MUST answer ONLY using the information strictly found in the provided PDF context.
+    
+    ⚠️ RULES (Follow them exactly):
+    - Use ONLY the text inside the "Context" section.
+    - Do NOT use general knowledge.
+    - Do NOT guess or infer beyond the PDF.
+    - Do NOT mix information from other PDFs or previous chats.
+    - If the answer is not explicitly present in the context, reply exactly:
+      "I could not find this information in the uploaded PDF."
+    
+    When you give an answer:
+    - Prefer quoting short phrases from the context verbatim when possible.
+    - Keep the answer concise and factual.
+    
+    Context (strict source of truth):
+    {context}
+    
+    User Question:
+    {question}
+    
+    Your Answer (ONLY from the context):
+    """
+    )
 
 
 SUMMARY_PROMPT = PromptTemplate(
@@ -130,8 +134,8 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
             pass
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,
-        chunk_overlap=30
+        chunk_size=500,
+        chunk_overlap=50
     )
     chunks = splitter.split_documents(docs)
 
@@ -163,7 +167,7 @@ if uploaded_pdf:
 
         # retriever ONCE per PDF
         st.session_state.retriever = vectorstore.as_retriever(
-            search_kwargs={"k": 2}
+            search_kwargs={"k": 8}
         )
 
         # QA chain ONCE per PDF
