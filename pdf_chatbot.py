@@ -14,7 +14,7 @@ MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"  # local ST model dir or
 OLLAMA_MODEL_NAME = "phi"  # ensure 'ollama run mistral' works on your machine
 
 # Retrieval strictness (tune as needed)
-K = 8
+K = 4
 SCORE_THRESHOLD = 0.35  # higher => stricter; try 0.30–0.45
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -130,8 +130,8 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
             pass
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50
+        chunk_size=400,
+        chunk_overlap=40
     )
     chunks = splitter.split_documents(docs)
 
