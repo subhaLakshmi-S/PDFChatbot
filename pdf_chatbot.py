@@ -6,23 +6,24 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.llms import Ollama
-from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 import uuid
 import hashlib
 
 # ================= CONFIG =================
-CHROMA_DB_DIR = "./chroma_db"   # (kept for reference; we’ll suffix with hash per-PDF)
 UPLOAD_DIR = "./uploaded_pdfs"
-
 MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"
 OLLAMA_MODEL_NAME = "mistral"
+
+# Retrieval strictness (tune as needed)
+K = 8
+SCORE_THRESHOLD = 0.35  # higher => stricter; 0.3–0.45 is typical
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ================= STREAMLIT UI =================
 st.set_page_config(page_title="PDF Chatbot", layout="wide")
-st.title("📚 Chat with Your PDF")
+st.title("📚 Chat with Your PDF (Strict PDF-only Answers)")
 
 # ================= SESSION STATE =================
 if "llm" not in st.session_state:
@@ -34,17 +35,20 @@ if "llm" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-if "qa_chain" not in st.session_state:
-    st.session_state.qa_chain = None
+if "retriever" not in st.session_state:
+    st.session_state.retriever = None
 
 if "current_pdf_hash" not in st.session_state:
     st.session_state.current_pdf_hash = None
 
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+
 # ================= EMBEDDINGS =================
 @st.cache_resource
 def load_embeddings():
-    # CPU inference; set device='cpu' (you already did)
-    return SentenceTransformer(MODEL_PATH, device='cpu')
+    # CPU inference; device="cpu"
+    return SentenceTransformer(MODEL_PATH, device="cpu")
 
 _embedding_model = load_embeddings()
 
@@ -63,13 +67,17 @@ PDF_PROMPT = PromptTemplate(
     template="""
 You are an AI assistant that MUST answer ONLY using the information strictly found in the provided PDF context.
 
-⚠️ RULES (Follow them exactly):
+⚠️ RULES (Follow exactly):
 - Use ONLY the text inside the "Context" section.
 - Do NOT use general knowledge.
 - Do NOT guess or infer beyond the PDF.
 - Do NOT mix information from other PDFs or previous chats.
 - If the answer is not explicitly present in the context, reply exactly:
   "I could not find this information in the uploaded PDF."
+
+When you give an answer:
+- Prefer quoting short phrases from the context verbatim when possible.
+- Keep the answer concise and factual.
 
 Context (strict source of truth):
 {context}
@@ -81,13 +89,12 @@ Your Answer (ONLY from the context):
 """
 )
 
-
 SUMMARY_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template="""
 You are a helpful assistant.
-Summarize the document based on the uploaded pdf only.
-You MAY combine and infer information across sections.
+Summarize the document based ONLY on the uploaded PDF context.
+You MAY combine details across sections, but do not introduce any external knowledge.
 Answer in bullet points.
 
 Context:
@@ -112,8 +119,7 @@ def is_summary_question(q: str) -> bool:
 def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
     """
     Build (or load) a Chroma vector store for a given PDF hash.
-    This function is intentionally cached by the hash + bytes (for correctness),
-    but the heavy part (Chroma persist) is keyed by db_path existence.
+    Persists to a per-PDF directory to prevent cross-PDF contamination.
     """
     temp_path = f"temp_{pdf_hash}.pdf"
     with open(temp_path, "wb") as f:
@@ -123,7 +129,6 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
         loader = PyPDFLoader(temp_path)
         docs = loader.load()
     finally:
-        # ensure we clean the temp file
         try:
             os.remove(temp_path)
         except OSError:
@@ -145,7 +150,7 @@ def build_vectorstore_from_hash(pdf_hash: str, pdf_bytes: bytes):
 
     vs = Chroma.from_documents(
         documents=chunks,
-        embedding=CustomEmbedding(),
+        embedding_function=CustomEmbedding(),  # FIXED: use embedding_function
         persist_directory=db_path
     )
     vs.persist()
@@ -160,63 +165,101 @@ if uploaded_pdf:
 
     if st.session_state.current_pdf_hash != pdf_hash:
         vectorstore = build_vectorstore_from_hash(pdf_hash, pdf_bytes)
+        st.session_state.vectorstore = vectorstore
 
-        # retriever ONCE per PDF
+        # STRICT retriever: thresholded similarity
         st.session_state.retriever = vectorstore.as_retriever(
-            search_kwargs={"k": 8}
-        )
-
-        # QA chain ONCE per PDF
-        st.session_state.qa_chain = RetrievalQA.from_chain_type(
-            llm=st.session_state.llm,
-            retriever=st.session_state.retriever,
-            chain_type="stuff",
-            chain_type_kwargs={"prompt": PDF_PROMPT},
-            return_source_documents=False
+            search_type="similarity_score_threshold",
+            search_kwargs={
+                "k": K,
+                "score_threshold": SCORE_THRESHOLD
+            },
         )
 
         st.session_state.chat_history = []
         st.session_state.current_pdf_hash = pdf_hash
 
+# ================= STRICT ASK FUNCTION =================
+def strict_ask(query: str, summary: bool = False, show_sources: bool = False):
+    """
+    Enforces PDF-only answers:
+    1) Retrieve with score thresholding.
+    2) If nothing relevant => return fallback (no LLM call).
+    3) Build context from the retrieved chunks and call LLM with a strict prompt.
+    """
+    if st.session_state.retriever is None:
+        return "⚠️ Please upload a PDF first.", None
+
+    # Get relevant documents (the retriever will filter by threshold)
+    docs = st.session_state.retriever.get_relevant_documents(query)
+
+    if not docs:
+        return "I could not find this information in the uploaded PDF.", []
+
+    context = "\n\n".join(d.page_content for d in docs)
+    prompt = (SUMMARY_PROMPT if summary else PDF_PROMPT).format(
+        context=context,
+        question=query
+    )
+
+    llm_out = st.session_state.llm.invoke(prompt)
+    if isinstance(llm_out, str):
+        answer = llm_out.strip()
+    else:
+        answer = str(llm_out)
+
+    if show_sources:
+        # Try to also show scores (fallback to 2nd call through vectorstore API)
+        try:
+            scored = st.session_state.vectorstore.similarity_search_with_score(query, k=K)
+            sources = [(d.metadata, s) for d, s in scored]
+        except Exception:
+            sources = [(getattr(d, "metadata", {}), None) for d in docs]
+        return answer, sources
+
+    return answer, None
+
 # ================= CHAT UI =================
 query = st.chat_input("Ask a question from the PDF")
 
-if not query:
-    st.stop()
+# Quick controls row
+col1, col2 = st.columns([1, 1])
+with col1:
+    show_sources = st.toggle("Show sources (debug)", value=False, help="View the chunks retrieved and their scores.")
+with col2:
+    st.caption(f"Threshold: {SCORE_THRESHOLD} | Top-K: {K} | Model: {OLLAMA_MODEL_NAME}")
 
-if st.session_state.qa_chain is None:
-    st.warning("⚠️ Please upload a PDF first.")
-    st.stop()
+if query:
+    st.session_state.chat_history.append({"role": "user", "content": query})
 
-# Decide which chain to use (regular vs summary)
-if is_summary_question(query):
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=st.session_state.llm,
-        retriever=st.session_state.retriever,
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": SUMMARY_PROMPT},
-        return_source_documents=False
-    )
-else:
-    qa_chain = st.session_state.qa_chain
+    if st.session_state.retriever is None:
+        result_text = "⚠️ Please upload a PDF first."
+        sources = None
+    else:
+        # Decide which mode to use
+        summary_mode = is_summary_question(query)
+        result_text, sources = strict_ask(query, summary=summary_mode, show_sources=show_sources)
 
-# Run the chosen chain
-st.session_state.chat_history.append({"role": "user", "content": query})
+    st.session_state.chat_history.append({"role": "assistant", "content": result_text})
 
-response = qa_chain.invoke({"query": query})
-result_text = response.get("result") or response.get("output_text") or str(response)
+    # Show last turn immediately
+    with st.chat_message("assistant"):
+        st.write(result_text)
+        if show_sources and sources is not None:
+            st.markdown("**Retrieved Chunks (metadata, score):**")
+            for i, (meta, score) in enumerate(sources, start=1):
+                st.write(f"[{i}] score={score}")
+                st.json(meta)
 
-st.session_state.chat_history.append({"role": "assistant", "content": result_text})
-
-# Reset PDF
+# Reset PDF / Session
 if st.button("🔄 Reset PDF"):
     # Clear only app-related keys to be safe
-    for k in ["llm", "chat_history", "qa_chain", "current_pdf_hash", "retriever"]:
+    for k in ["llm", "chat_history", "current_pdf_hash", "retriever", "vectorstore"]:
         if k in st.session_state:
             del st.session_state[k]
     st.rerun()
 
-# ================= DISPLAY CHAT =================
+# ================= DISPLAY FULL CHAT =================
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
