@@ -11,7 +11,7 @@ import hashlib
 # ================= CONFIG =================
 UPLOAD_DIR = "./uploaded_pdfs"
 MODEL_PATH = "./sentence-transformers_all-MiniLM-L6-v2"  # local ST model dir or name
-OLLAMA_MODEL_NAME = "mistral"  # ensure 'ollama run mistral' works on your machine
+OLLAMA_MODEL_NAME = "phi"  # ensure 'ollama run mistral' works on your machine
 
 # Retrieval strictness (tune as needed)
 K = 8
@@ -21,7 +21,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ================= STREAMLIT UI =================
 st.set_page_config(page_title="PDF Chatbot", layout="wide")
-st.title("📚 Chat with Your PDF (Strict PDF-only Answers)")
+st.title("📚 Chat with Your PDF")
 
 # ================= SESSION STATE =================
 if "llm" not in st.session_state:
